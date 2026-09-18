@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -96,6 +97,7 @@ func DiagnoseDBPath() (PathDiagnosis, error) {
 
 type readDirFunc func(string) ([]os.DirEntry, error)
 type statFunc func(string) (os.FileInfo, error)
+type openFileFunc func(string) (*os.File, error)
 
 func findDBPath(home string, readDir readDirFunc, stat statFunc) (PathDiagnosis, error) {
 	container := filepath.Join(home, "Library", "Group Containers", thingsGroupContainer)
@@ -157,6 +159,14 @@ func findDBPath(home string, readDir readDirFunc, stat statFunc) (PathDiagnosis,
 
 // Open opens a read-only connection to the Things3 database.
 func Open(path string) (*DB, error) {
+	// SQLite reduces several filesystem failures to SQLITE_CANTOPEN (14),
+	// losing the underlying EPERM/EACCES that identifies macOS privacy
+	// controls. Probe one byte first so callers can still use errors.Is with
+	// fs.ErrPermission. This does not modify the database or inspect task data.
+	if err := probeDatabaseReadable(path, os.Open); err != nil {
+		return nil, err
+	}
+
 	sqlDB, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
@@ -167,6 +177,24 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("setting query_only pragma: %w", err)
 	}
 	return &DB{db: sqlDB}, nil
+}
+
+func probeDatabaseReadable(path string, openFile openFileFunc) error {
+	file, err := openFile(path)
+	if err != nil {
+		return fmt.Errorf("opening database file for read probe: %w", err)
+	}
+
+	var header [1]byte
+	_, readErr := file.Read(header[:])
+	closeErr := file.Close()
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return fmt.Errorf("reading database file: %w", readErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("closing database file after read probe: %w", closeErr)
+	}
+	return nil
 }
 
 func (d *DB) Close() error {

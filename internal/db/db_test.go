@@ -139,12 +139,33 @@ func TestNewFromSQL(t *testing.T) {
 }
 
 func TestOpenBadPath(t *testing.T) {
-	// modernc.org/sqlite only errors at Exec time for bad paths on some
-	// platforms — but the PRAGMA query_only pragma will execute, so a
-	// non-existent path through a non-existent directory should fail.
 	_, err := Open("/nonexistent/dir/does/not/exist.sqlite")
 	if err == nil {
 		t.Fatal("expected error for bad path")
+	}
+}
+
+func TestProbeDatabaseReadablePreservesPermissionError(t *testing.T) {
+	path := "/protected/main.sqlite"
+	err := probeDatabaseReadable(path, func(got string) (*os.File, error) {
+		if got != path {
+			t.Fatalf("open(%q), want %q", got, path)
+		}
+		return nil, &os.PathError{Op: "open", Path: got, Err: fs.ErrPermission}
+	})
+	if err == nil {
+		t.Fatal("expected permission error")
+	}
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("error does not wrap fs.ErrPermission: %v", err)
+	}
+}
+
+func TestProbeDatabaseReadableAllowsEmptyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "empty.sqlite")
+	mustCreate(t, path)
+	if err := probeDatabaseReadable(path, os.Open); err != nil {
+		t.Fatalf("probeDatabaseReadable: %v", err)
 	}
 }
 
