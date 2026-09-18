@@ -1,6 +1,9 @@
 package db
 
 import (
+	"errors"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -51,6 +54,63 @@ func TestFindDBPathMultipleMatches(t *testing.T) {
 	_, err := FindDBPath()
 	if err == nil || !strings.Contains(err.Error(), "multiple") {
 		t.Fatalf("expected multiple error, got %v", err)
+	}
+}
+
+func TestFindDBPathReportsContainerPermissionDenied(t *testing.T) {
+	home := t.TempDir()
+	container := filepath.Join(home, "Library", "Group Containers", thingsGroupContainer)
+	want := &os.PathError{Op: "readdir", Path: container, Err: fs.ErrPermission}
+
+	diagnosis, err := findDBPath(home, func(path string) ([]os.DirEntry, error) {
+		if path != container {
+			t.Fatalf("ReadDir(%q), want %q", path, container)
+		}
+		return nil, want
+	}, os.Stat)
+	if err == nil {
+		t.Fatal("expected permission error")
+	}
+	if diagnosis.Status != "permission_denied" {
+		t.Errorf("status = %q, want permission_denied", diagnosis.Status)
+	}
+	var accessErr *PathAccessError
+	if !errors.As(err, &accessErr) {
+		t.Fatalf("error type = %T, want *PathAccessError", err)
+	}
+	if accessErr.Path != container {
+		t.Errorf("error path = %q, want %q", accessErr.Path, container)
+	}
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Errorf("error does not wrap fs.ErrPermission: %v", err)
+	}
+}
+
+func TestFindDBPathReportsDatabasePermissionDenied(t *testing.T) {
+	home := t.TempDir()
+	container := filepath.Join(home, "Library", "Group Containers", thingsGroupContainer)
+	dataDir := filepath.Join(container, "ThingsData-ABC")
+	mustMkdirAll(t, dataDir)
+	wantPath := filepath.Join(dataDir, "Things Database.thingsdatabase", "main.sqlite")
+
+	diagnosis, err := findDBPath(home, os.ReadDir, func(path string) (os.FileInfo, error) {
+		if path != wantPath {
+			t.Fatalf("Stat(%q), want %q", path, wantPath)
+		}
+		return nil, &os.PathError{Op: "stat", Path: path, Err: fs.ErrPermission}
+	})
+	if err == nil {
+		t.Fatal("expected permission error")
+	}
+	if diagnosis.Status != "permission_denied" {
+		t.Errorf("status = %q, want permission_denied", diagnosis.Status)
+	}
+	var accessErr *PathAccessError
+	if !errors.As(err, &accessErr) {
+		t.Fatalf("error type = %T, want *PathAccessError", err)
+	}
+	if accessErr.Path != wantPath {
+		t.Errorf("error path = %q, want %q", accessErr.Path, wantPath)
 	}
 }
 
